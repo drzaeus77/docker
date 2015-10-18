@@ -42,6 +42,12 @@ func (n *networkNamespace) Master(name string) IfaceOption {
 	}
 }
 
+func (n *networkNamespace) BpfPath(path string) IfaceOption {
+	return func(i *nwIface) {
+		i.bpfPath = path
+	}
+}
+
 func (n *networkNamespace) Address(addr *net.IPNet) IfaceOption {
 	return func(i *nwIface) {
 		i.address = addr

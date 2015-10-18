@@ -93,6 +93,7 @@ func (sb *sandbox) clearDefaultGW() error {
 
 func (sb *sandbox) needDefaultGW() bool {
 	var needGW bool
+	return false
 
 	for _, ep := range sb.getConnectedEndpoints() {
 		if ep.endpointInGWNetwork() {

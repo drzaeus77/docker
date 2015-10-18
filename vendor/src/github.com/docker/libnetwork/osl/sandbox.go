@@ -89,6 +89,9 @@ type IfaceOptionSetter interface {
 
 	// Address returns an option setter to set interface routes.
 	Routes([]*net.IPNet) IfaceOption
+
+	// BpfPath returns an option setter to update TC with a BPF program
+	BpfPath(string) IfaceOption
 }
 
 // Info represents all possible information that
@@ -143,6 +146,9 @@ type Interface interface {
 
 	// Master returns the srcname of the master interface for this interface.
 	Master() string
+
+	// BpfPath returns the path of a bpf program running for this interface
+	BpfPath() string
 
 	// Remove an interface from the sandbox by renaming to original name
 	// and moving it out of the sandbox.

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"sync"
+	"syscall"
 
 	"github.com/docker/libnetwork/types"
 	"github.com/vishvananda/netlink"
@@ -23,6 +24,7 @@ type nwIface struct {
 	addressIPv6 *net.IPNet
 	routes      []*net.IPNet
 	bridge      bool
+	bpfPath     string
 	ns          *networkNamespace
 	sync.Mutex
 }
@@ -60,6 +62,13 @@ func (i *nwIface) Master() string {
 	defer i.Unlock()
 
 	return i.master
+}
+
+func (i *nwIface) BpfPath() string {
+	i.Lock()
+	defer i.Unlock()
+
+	return i.bpfPath
 }
 
 func (i *nwIface) Address() *net.IPNet {
@@ -294,6 +303,7 @@ func configureInterface(iface netlink.Link, i *nwIface) error {
 		{setInterfaceIP, fmt.Sprintf("error setting interface %q IP to %q", ifaceName, i.Address())},
 		{setInterfaceIPv6, fmt.Sprintf("error setting interface %q IPv6 to %q", ifaceName, i.AddressIPv6())},
 		{setInterfaceMaster, fmt.Sprintf("error setting interface %q master to %q", ifaceName, i.DstMaster())},
+		{setInterfaceTc, fmt.Sprintf("error setting interface %q tc", ifaceName)},
 	}
 
 	for _, config := range ifaceConfigurators {
@@ -344,6 +354,69 @@ func setInterfaceRoutes(iface netlink.Link, i *nwIface) error {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func setInterfaceTc(iface netlink.Link, i *nwIface) error {
+	ingressFd, err := netlink.BpfOpen("/run/bcc/foo/functions/ingress/fd")
+	if err != nil {
+		return fmt.Errorf("failed loading bpf program %v", err)
+	}
+	defer syscall.Close(ingressFd)
+	ingress := &netlink.Ingress{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: iface.Attrs().Index,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Parent:    netlink.HANDLE_INGRESS,
+		},
+	}
+	if err := netlink.QdiscAdd(ingress); err != nil {
+		return fmt.Errorf("failed setting ingress qdisc: %v", err)
+	}
+	u32 := &netlink.U32{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: iface.Attrs().Index,
+			Parent:    ingress.QdiscAttrs.Handle,
+			Priority:  1,
+			Protocol:  syscall.ETH_P_ALL,
+		},
+		ClassId: netlink.MakeHandle(1, 1),
+		BpfFd:   ingressFd,
+	}
+	if err := netlink.FilterAdd(u32); err != nil {
+		return fmt.Errorf("failed adding ingress filter: %v", err)
+	}
+
+	egressFd, err := netlink.BpfOpen("/run/bcc/foo/functions/egress/fd")
+	if err != nil {
+		return fmt.Errorf("failed loading bpf program %v", err)
+	}
+	defer syscall.Close(egressFd)
+	fq := &netlink.GenericQdisc{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: iface.Attrs().Index,
+			Handle:    netlink.MakeHandle(1, 0),
+			Parent:    netlink.HANDLE_ROOT,
+		},
+		QdiscType: "fq_codel",
+	}
+	if err := netlink.QdiscAdd(fq); err != nil {
+		return fmt.Errorf("failed setting egress qdisc: %v", err)
+	}
+	u32 = &netlink.U32{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: iface.Attrs().Index,
+			Parent:    fq.QdiscAttrs.Handle,
+			Protocol:  syscall.ETH_P_ALL,
+			//Handle:    10,
+			//Priority:  10,
+		},
+		ClassId: netlink.MakeHandle(1, 2),
+		BpfFd:   egressFd,
+	}
+	if err := netlink.FilterAdd(u32); err != nil {
+		return fmt.Errorf("failed adding egress filter: %v", err)
 	}
 	return nil
 }
